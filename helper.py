@@ -6,4 +6,4 @@ def f(path):
     print(f"relabeled {path}")
 
 if __name__ == "__main__":
-    f(r'data/labeled_data/file05.csv')
+    f(r'data/labeled_data/file20.csv')
