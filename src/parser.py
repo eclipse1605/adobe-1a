@@ -1,17 +1,10 @@
 import fitz
 import pandas as pd
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from fuzzywuzzy import fuzz
 from typing import List, Dict, Any
 from tqdm import tqdm
-
-try:
-    EMBEDDING_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
-except Exception as e:
-    print(f"Error loading SentenceTransformer model: {e}")
-    print("Please ensure you have an internet connection for the first download.")
-    EMBEDDING_MODEL = None
+import re
 
 def get_font_statistics(doc: fitz.Document) -> Dict[str, float]:
     sizes = {}
@@ -52,63 +45,75 @@ def extract_features(pdf_path: str) -> pd.DataFrame:
     doc_common_font_size = font_stats["common_size"]
     toc = doc.get_toc()
 
-    features = []
-    all_span_texts = []
+    features_list = []
+    prev_y1 = 0.0
 
-    # First pass: collect all span information
     for page_num, page in enumerate(doc):
         page_height = page.rect.height
+        page_width = page.rect.width
         blocks = page.get_text("dict")["blocks"]
         
-        prev_span_bbox_on_page = None
         for block_num, b in enumerate(blocks):
-            if b['type'] == 0:
+            if b['type'] == 0:  # Text block
                 for line_num, l in enumerate(b["lines"]):
-                    for span_num, s in enumerate(l["spans"]):
-                        text = s["text"].strip()
-                        if not text:
-                            continue
+                    line_text = "".join([s["text"] for s in l["spans"]]).strip()
+                    if not line_text:
+                        continue
 
-                        font_size = s["size"]
-                        
-                        space_to_prev = 0
-                        if prev_span_bbox_on_page:
-                             space_to_prev = s["bbox"][1] - prev_span_bbox_on_page[3]
-                        
-                        span_info = {
-                            "text": text,
-                            "page_num": page_num + 1,
-                            "block_num": block_num,
-                            "line_num": line_num,
-                            "bbox_x0": s["bbox"][0],
-                            "font_size": font_size,
-                            "norm_font_size": font_size / doc_common_font_size if doc_common_font_size > 0 else 1,
-                            "is_bold": "bold" in s["font"].lower(),
-                            "is_italic": "italic" in s["font"].lower(),
-                            "y_pos_rel": s["bbox"][1] / page_height if page_height > 0 else 0,
-                            "text_len": len(text),
-                            "cap_ratio": sum(1 for c in text if c.isupper()) / len(text) if text else 0,
-                            "toc_match_score": get_toc_match_score(text, page_num + 1, toc),
-                            "space_to_prev": space_to_prev,
-                        }
-                        features.append(span_info)
-                        all_span_texts.append(text)
-                        prev_span_bbox_on_page = s["bbox"]
+                    first_span = l["spans"][0]
+                    font_size = first_span["size"]
+                    
+                    current_y0 = l["bbox"][1]
+                    space_to_prev = current_y0 - prev_y1 if prev_y1 > 0 else 0.0
+                    prev_y1 = l["bbox"][3]
+                    
+                    line_info = {
+                        "text": line_text,
+                        "page_num": page_num + 1,
+                        "block_num": block_num,
+                        "line_num": line_num,
+                        "bbox_x0": l["bbox"][0],
+                        "bbox_x1": l["bbox"][2],
+                        "page_width": page_width,
+                        "font_size": font_size,
+                        "norm_font_size": font_size / doc_common_font_size if doc_common_font_size > 0 else 1,
+                        "is_bold": "bold" in first_span["font"].lower(),
+                        "is_italic": "italic" in first_span["font"].lower(),
+                        "y_pos_rel": first_span["bbox"][1] / page_height if page_height > 0 else 0,
+                        "text_len": len(line_text),
+                        "cap_ratio": sum(1 for c in line_text if c.isupper()) / len(line_text) if line_text else 0,
+                        "toc_match_score": get_toc_match_score(line_text, page_num + 1, toc),
+                        "space_to_prev": space_to_prev
+                    }
+                    features_list.append(line_info)
+        
+        prev_y1 = 0.0
 
-    if not features:
+    if not features_list:
         doc.close()
         return pd.DataFrame()
 
-    if EMBEDDING_MODEL:
-        print(f"Generating embeddings for {len(all_span_texts)} spans...")
-        embeddings = EMBEDDING_MODEL.encode(all_span_texts, show_progress_bar=True)
-        
-        for i, feat in enumerate(features):
-            for j, val in enumerate(embeddings[i]):
-                feat[f"emb_{j}"] = val
-    
+    df = pd.DataFrame(features_list)
+    df = add_text_based_features(df)
     doc.close()
-    return pd.DataFrame(features)
+    return df
+
+def add_text_based_features(df: pd.DataFrame) -> pd.DataFrame:
+    df['center_x'] = (df['bbox_x0'] + df['bbox_x1']) / 2
+    page_mid_x = df['page_width'] / 2
+    tolerance = df['page_width'] * 0.1
+    df['is_centered'] = (df['center_x'] > (page_mid_x - tolerance)) & (df['center_x'] < (page_mid_x + tolerance))
+
+    number_pattern = re.compile(r'^\s*(\d+(\.\d+)*|[A-Za-z])\.\s+|^\s*\(\s*(\d+|[ivx]+|[A-Za-z])\s*\)\s*')
+    df['starts_with_number'] = df['text'].apply(lambda x: bool(number_pattern.match(x)))
+
+    keywords = ['abstract', 'introduction', 'conclusion', 'summary', 'references', 'appendix', 'chapter', 'section', 'acknowledgements', 'contents']
+    keyword_pattern = re.compile(r'\b(' + '|'.join(keywords) + r')\b', re.IGNORECASE)
+    df['keyword_in_text'] = df['text'].apply(lambda x: bool(keyword_pattern.search(x)))
+    
+    df = df.drop(columns=['center_x', 'page_width', 'bbox_x0', 'bbox_x1'])
+    
+    return df
 
 if __name__ == '__main__':
     import sys
@@ -117,7 +122,7 @@ if __name__ == '__main__':
         print(f"Starting feature extraction for: {pdf_path}")
         df = extract_features(pdf_path)
         if not df.empty:
-            print(f"Successfully extracted {len(df)} spans.")
+            print(f"Successfully extracted {len(df)} lines.")
             print("Columns:", df.columns.tolist())
             print("First 5 rows:")
             print(df.head())
