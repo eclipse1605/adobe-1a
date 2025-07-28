@@ -43,22 +43,91 @@ def predict_headings(pdf_path: str, model, features: list, label_encoder: LabelE
         print(f"Error during prediction or decoding: {e}", file=sys.stderr)
         return pd.DataFrame()
 
-    headings_df = df[df['label'].isin(['title', 'H1', 'H2', 'H3'])].copy()
+    df = apply_heuristics(df)
+    
+    headings_df = df[df['label'].isin(['title', 'H1', 'H2', 'H3', 'TOC'])].copy()
     
     return headings_df[['text', 'label', 'page_num', 'block_num', 'line_num']]
+
+def apply_heuristics(df: pd.DataFrame) -> pd.DataFrame:
+    
+    if 'font_size' not in df.columns or 'is_bold' not in df.columns or 'is_centered' not in df.columns:
+        return df
+        
+    for i, row in df.iterrows():
+        if row['font_size'] > 15 and row['is_bold']:
+            if row['page_num'] < 2 and row['is_centered'] and row['label'] not in ['title', 'H1']:
+                 df.loc[i, 'label'] = 'title'
+            elif row['page_num'] < 2 and row['label'] not in ['title', 'H1']:
+                 df.loc[i, 'label'] = 'title' if row['page_num'] == 0 else 'H1'
+            elif row['label'] not in ['title', 'H1']:
+                df.loc[i, 'label'] = 'H1'
+
+    for i, row in df.iterrows():
+        if row['starts_with_number'] and not row['keyword_in_text']:
+            if row['label'] not in ['H1', 'H2', 'H3']:
+                 df.loc[i, 'label'] = 'H2'
+        elif row['keyword_in_text'] and row['label'] not in ['title', 'H1']:
+             df.loc[i, 'label'] = 'H1'
+             
+    df.sort_values(by=['page_num', 'block_num', 'line_num'], inplace=True)
+    
+    new_labels = df['label'].copy()
+    last_h1_index = -1
+    last_h2_index = -1
+
+    for i in df.index:
+        label = df.loc[i, 'label']
+        if label == 'H1':
+            last_h1_index = i
+            last_h2_index = -1
+        elif label == 'H2':
+            if last_h1_index == -1:
+                new_labels.loc[i] = 'H1'
+                last_h1_index = i
+            else:
+                last_h2_index = i
+        elif label == 'H3':
+            if last_h2_index == -1:
+                if last_h1_index != -1:
+                    new_labels.loc[i] = 'H2'
+                    last_h2_index = i
+                else:
+                    new_labels.loc[i] = 'H1'
+                    last_h1_index = i
+    
+    df['label'] = new_labels
+                
+    toc_keywords = ['contents', 'table of contents', 'index']
+    for i, row in df.iterrows():
+        if any(keyword in row['text'].lower() for keyword in toc_keywords):
+            df.loc[i, 'label'] = 'TOC'
+            
+    return df
 
 def create_json_outline(headings_df: pd.DataFrame, pdf_filename: str) -> str:
     title_df = headings_df[headings_df['label'] == 'title']
     if not title_df.empty:
-        best_title = title_df.iloc[0]
+        best_title = title_df.sort_values(by=['page_num', 'block_num', 'line_num']).iloc[0]
         title = best_title['text']
     else:
         title = os.path.basename(pdf_filename).replace('.pdf', '')
 
-    outline_df = headings_df[headings_df['label'] != 'title'].copy()
+    toc_df = headings_df[headings_df['label'] == 'TOC']
+    outline_df = headings_df[headings_df['label'].isin(['H1', 'H2', 'H3'])].copy()
     outline_df.sort_values(by=['page_num', 'block_num', 'line_num'], inplace=True)
 
     outline = []
+    
+    if not toc_df.empty:
+        toc_df.sort_values(by=['page_num', 'block_num', 'line_num'], inplace=True)
+        for i, row in toc_df.iterrows():
+            outline.append({
+                "level": "TOC",
+                "text": row['text'],
+                "page": int(row['page_num'])
+            })
+            
     i = 0
     while i < len(outline_df):
         current_heading = outline_df.iloc[i]

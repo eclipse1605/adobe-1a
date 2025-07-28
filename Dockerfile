@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 python:3.9-slim
+FROM --platform=linux/amd64 python:3.12-slim
 
 WORKDIR /app
 
@@ -19,4 +19,4 @@ RUN useradd -m myuser \
  && chown -R myuser:myuser /app
 USER myuser
 
-ENTRYPOINT ["python3", "src/main.py", "/app/input"]
+ENTRYPOINT ["python3", "src/main.py"]

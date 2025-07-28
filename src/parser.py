@@ -102,14 +102,14 @@ def add_text_based_features(df: pd.DataFrame) -> pd.DataFrame:
     df['center_x'] = (df['bbox_x0'] + df['bbox_x1']) / 2
     page_mid_x = df['page_width'] / 2
     tolerance = df['page_width'] * 0.1
-    df['is_centered'] = (df['center_x'] > (page_mid_x - tolerance)) & (df['center_x'] < (page_mid_x + tolerance))
+    df['is_centered'] = ((df['center_x'] > (page_mid_x - tolerance)) & (df['center_x'] < (page_mid_x + tolerance))).astype(int)
 
     number_pattern = re.compile(r'^\s*(\d+(\.\d+)*|[A-Za-z])\.\s+|^\s*\(\s*(\d+|[ivx]+|[A-Za-z])\s*\)\s*')
-    df['starts_with_number'] = df['text'].apply(lambda x: bool(number_pattern.match(x)))
+    df['starts_with_number'] = df['text'].apply(lambda x: bool(number_pattern.match(x))).astype(int)
 
     keywords = ['abstract', 'introduction', 'conclusion', 'summary', 'references', 'appendix', 'chapter', 'section', 'acknowledgements', 'contents']
     keyword_pattern = re.compile(r'\b(' + '|'.join(keywords) + r')\b', re.IGNORECASE)
-    df['keyword_in_text'] = df['text'].apply(lambda x: bool(keyword_pattern.search(x)))
+    df['keyword_in_text'] = df['text'].apply(lambda x: bool(keyword_pattern.search(x))).astype(int)
     
     df = df.drop(columns=['center_x', 'page_width', 'bbox_x0', 'bbox_x1'])
     
